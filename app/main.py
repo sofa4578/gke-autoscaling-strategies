@@ -1,13 +1,3 @@
-
-"""
-FastAPI Highload API — Diploma Project
-Демонструє реальні патерни highload-сервісу:
-- Кешування в Redis з TTL
-- CRUD операції з in-memory store
-- CPU-важкі обчислення (async, не блокує event loop)
-- Черга задач у Redis (для Queue-based HPA — підхід 3)
-- Метрики Prometheus (для RPS-based HPA — підхід 2)
-"""
 import os
 import math
 import uuid
@@ -15,36 +5,39 @@ import json
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
 
 import redis
 from fastapi import FastAPI, HTTPException
 from prometheus_fastapi_instrumentator import Instrumentator
 from tenacity import retry, stop_after_attempt, wait_fixed
 
-# ── Конфігурація ──────────────────────────────────────────────────────────────
 REDIS_HOST     = os.getenv("REDIS_HOST", "localhost")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
-QUEUE_KEY      = "task_queue"   # Redis list — для підходу 3
+QUEUE_KEY      = "task_queue"   
 
-# ── Ініціалізація FastAPI + Prometheus ────────────────────────────────────────
 app = FastAPI(title="Diploma Highload API", version="2.0.0")
 
-# Реєструємо /metrics ендпоінт — потрібен для KEDA підходу 2
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 Instrumentator(
     should_group_status_codes=False,
     should_ignore_untemplated=True,
 ).instrument(app).expose(app, endpoint="/metrics")
 
-# ── Пул процесів для CPU-важких задач (обходимо GIL) ─────────────────────────
 process_pool = ProcessPoolExecutor(max_workers=2)
 
-# ── Імітація бази даних (in-memory для простоти) ─────────────────────────────
 ITEMS_DB: dict = {
     str(i): {"id": str(i), "name": f"product_{i}", "price": round(i * 9.99, 2), "stock": i * 10}
     for i in range(1, 501)
 }
 
-# ── Redis з retry ─────────────────────────────────────────────────────────────
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
 def _connect_redis() -> redis.Redis:
     client = redis.Redis(
@@ -61,29 +54,24 @@ def _connect_redis() -> redis.Redis:
 
 try:
     cache = _connect_redis()
-    print(f"✅ Redis connected: {REDIS_HOST}")
+    print(f"Redis connected: {REDIS_HOST}")
 except Exception as e:
-    print(f"⚠️  Redis unavailable: {e}")
+    print(f"Redis unavailable: {e}")
     cache = None
 
 def _require_redis():
     if cache is None:
         raise HTTPException(status_code=503, detail="Redis is unavailable")
 
-# ── CPU-важка функція (запускається у ProcessPoolExecutor) ────────────────────
 def _cpu_task(n: int) -> float:
     result = 0.0
     for i in range(1, n):
         result += math.sqrt(i) * math.log(i + 1)
     return result
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ЕНДПОІНТИ
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/", tags=["General"])
 async def root():
-    """Головна сторінка — лічильник візитів у Redis."""
     _require_redis()
     try:
         visits = cache.incr("visits")
@@ -94,7 +82,6 @@ async def root():
 
 @app.get("/health", tags=["General"])
 async def health():
-    """Health check для liveness/readiness probe."""
     redis_ok = False
     if cache:
         try:
@@ -105,11 +92,8 @@ async def health():
     return {"status": "ok", "redis": redis_ok}
 
 
-# ── CRUD — імітує роботу з базою даних + кешування ───────────────────────────
-
 @app.get("/items", tags=["Items"])
 async def list_items(skip: int = 0, limit: int = 20):
-    """Список товарів із пагінацією. Перші сторінки кешуються в Redis."""
     cache_key = f"items:list:{skip}:{limit}"
     if cache:
         try:
@@ -132,7 +116,6 @@ async def list_items(skip: int = 0, limit: int = 20):
 
 @app.get("/items/{item_id}", tags=["Items"])
 async def get_item(item_id: str):
-    """Отримати товар за ID. Кешується на 60 секунд."""
     cache_key = f"item:{item_id}"
     if cache:
         try:
@@ -156,12 +139,10 @@ async def get_item(item_id: str):
 
 @app.post("/items", tags=["Items"], status_code=201)
 async def create_item(name: str, price: float, stock: int = 0):
-    """Створити новий товар. Інвалідує кеш списку."""
     item_id = str(uuid.uuid4())[:8]
     ITEMS_DB[item_id] = {"id": item_id, "name": name, "price": price, "stock": stock}
     if cache:
         try:
-            # Інвалідуємо кешовані сторінки списку
             keys = cache.keys("items:list:*")
             if keys:
                 cache.delete(*keys)
@@ -172,7 +153,6 @@ async def create_item(name: str, price: float, stock: int = 0):
 
 @app.get("/stats", tags=["Analytics"])
 async def stats():
-    """Агрегація по всіх товарах — дорога операція, кешується на 10 сек."""
     cache_key = "stats:summary"
     if cache:
         try:
@@ -195,8 +175,7 @@ async def stats():
     return {"source": "db", **result}
 
 
-# ── CPU stress — для підходу 1 (CPU-based HPA) ───────────────────────────────
-stress_semaphore = asyncio.Semaphore(3)  # максимум 3 одночасно
+stress_semaphore = asyncio.Semaphore(3)  
 
 @app.get("/stress")
 async def stress(n: int = 500000):
@@ -208,12 +187,10 @@ async def stress(n: int = 500000):
     return {"computations": n, "result": round(result, 2)}
 
 
-# ── Task Queue — для підходу 3 (Queue-based HPA через Redis List) ─────────────
-
 @app.post("/tasks", tags=["Task Queue"])
 async def enqueue_task(payload: str = "default_task"):
     _require_redis()
-    for attempt in range(3):          # 3 спроби
+    for attempt in range(3):        
         try:
             task_id = str(uuid.uuid4())[:8]
             task = json.dumps({"id": task_id, "payload": payload})
@@ -227,7 +204,6 @@ async def enqueue_task(payload: str = "default_task"):
 
 @app.get("/tasks/process", tags=["Task Queue"])
 async def process_task():
-    """Взяти одну задачу з черги та обробити (імітація воркера)."""
     _require_redis()
     try:
         raw = cache.lpop(QUEUE_KEY)
@@ -243,7 +219,6 @@ async def process_task():
 
 @app.get("/tasks/length", tags=["Task Queue"])
 async def queue_length():
-    """Довжина черги — для моніторингу та тестування підходу 3."""
     _require_redis()
     try:
         length = cache.llen(QUEUE_KEY)
