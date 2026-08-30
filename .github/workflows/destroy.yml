@@ -2,7 +2,7 @@
 name: Destroy Infrastructure
 
 on:
-  workflow_dispatch:      # Тільки ручний запуск — щоб випадково не знести!
+  workflow_dispatch:    
 
 env:
   PROJECT_ID: diplomalevko
