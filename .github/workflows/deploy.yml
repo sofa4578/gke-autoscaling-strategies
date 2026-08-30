@@ -2,7 +2,7 @@
 name: Build & Deploy
 
 on:
-  workflow_dispatch:            # Ручний запуск з GitHub UI
+  workflow_dispatch: 
 
 env:
   PROJECT_ID: diplomalevko
@@ -10,7 +10,6 @@ env:
   ZONE:       us-central1-a
 
 jobs:
-  # ── Job 1: Terraform — тільки якщо змінились файли інфраструктури ──────────
   terraform:
     name: Terraform Apply
     runs-on: ubuntu-latest
@@ -28,7 +27,7 @@ jobs:
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
-        terraform_wrapper: false   # ВАЖЛИВО: без wrapper outputs доступні напряму
+        terraform_wrapper: false   
 
     - name: Terraform Init
       working-directory: ./terraform
@@ -47,30 +46,24 @@ jobs:
           -var="zone=${{ env.ZONE }}"
 
     - name: Get Redis IP and Auth
-      id: tf_outputs   # <--- Цей ID важливий, через нього джоба експортує outputs
+      id: tf_outputs  
       working-directory: ./terraform
       run: |
-        # Отримуємо хост Redis
         REDIS_HOST=$(terraform output -raw redis_host)
         
-        # Спроба отримати пароль через Terraform
         REDIS_AUTH=$(terraform output -raw redis_auth)
         
-        # Якщо Terraform повернув порожньо, беремо напряму з GCP через gcloud
         if [ -z "$REDIS_AUTH" ] || [ "$REDIS_AUTH" = "null" ]; then
-          echo "⚠️ Terraform auth output is empty. Querying GCP directly..."
+          echo "Terraform auth output is empty. Querying GCP directly..."
           REDIS_AUTH=$(gcloud redis instances describe diploma-redis --region=${{ env.REGION }} --format='value(authString)')
         fi
         
-        # Маскуємо пароль для безпеки логів
         echo "::add-mask::$REDIS_AUTH"
         
-        # ВАЖЛИВО: Записуємо в OUTPUT кроку, щоб передати між серверами (Jobs)
         echo "redis_host=$REDIS_HOST" >> $GITHUB_OUTPUT
         echo "redis_auth=$REDIS_AUTH" >> $GITHUB_OUTPUT
-        echo "✅ Redis Host and Auth registered in GITHUB_OUTPUT."
+        echo "Redis Host and Auth registered in GITHUB_OUTPUT."
 
-  # ── Job 2: Build & Push Docker image ──────────────────────────────────────
   build:
     name: Build Docker Image
     runs-on: ubuntu-latest
@@ -98,7 +91,6 @@ jobs:
         echo "image_url=$IMAGE_URL" >> $GITHUB_OUTPUT
         echo "Built and pushed: $IMAGE_URL"
 
-  # ── Job 3: Deploy to GKE ───────────────────────────────────────────────────
   deploy:
     name: Deploy to GKE
     runs-on: ubuntu-latest
@@ -130,7 +122,6 @@ jobs:
         if [ -z "$REDIS_HOST" ]; then echo "ERROR: REDIS_HOST is empty"; exit 1; fi
         if [ -z "$IMAGE_URL" ];  then echo "ERROR: IMAGE_URL is empty";  exit 1; fi
         
-        # Якщо пароль порожній — ми не ламаємо збірку, а просто попереджаємо
         if [ -z "$REDIS_AUTH" ] || [ "$REDIS_AUTH" = "null" ]; then
           echo "⚠️ WARNING: REDIS_AUTH is empty. Proceeding with AUTH disabled."
           echo "REDIS_AUTH=" >> $GITHUB_ENV
@@ -141,7 +132,6 @@ jobs:
 
     - name: Install KEDA
       run: |
-        # Перевіряємо чи KEDA вже встановлено
         if ! kubectl get namespace keda &>/dev/null; then
           echo "Installing KEDA..."
           kubectl apply --server-side \
@@ -167,16 +157,13 @@ jobs:
         # Namespace спочатку
         kubectl apply -f namespace.yaml
 
-        # Підстановка змінних через envsubst
         envsubst < secret.yaml    | kubectl apply -f -
         envsubst < configmap.yaml | kubectl apply -f -
         envsubst < deployment.yaml | kubectl apply -f -
 
-        # Статичні маніфести
         kubectl apply -f service.yaml
         kubectl apply -f pdb.yaml
 
-        # Підхід 1: CPU HPA (активний за замовчуванням)
         kubectl apply -f hpa-cpu.yaml
 
         echo "Deployment applied successfully"
@@ -191,7 +178,7 @@ jobs:
         for i in $(seq 1 20); do
           IP=$(kubectl get svc fastapi-service -n prod-apps -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
           if [ -n "$IP" ]; then
-            echo "✅ App is live at: http://$IP"
+            echo "App is live at: http://$IP"
             break
           fi
           echo "Attempt $i/20 — waiting 15s..."
