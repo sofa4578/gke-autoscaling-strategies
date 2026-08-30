@@ -201,18 +201,6 @@ than pretending it isn't there.
   with node pools across three zones would be the production choice.
 - No backup or restore procedure for Redis state.
 
----
-
-## What I would do differently
-
-[Two or three sentences in your own words. Something like: the scaling thresholds were chosen
-to make differences visible within a short test window rather than tuned for stability;
-KEDA's polling interval and cooldown period turned out to matter more than the threshold
-value itself; the CPU strategy's behaviour is entirely determined by the resource *request*,
-which is easy to overlook.]
-
----
-
 ## License
 
 MIT
