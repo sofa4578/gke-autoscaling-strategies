@@ -107,20 +107,17 @@ behaviour.
 
 ## Results
 
-[Replace this section with your actual numbers. The Locust HTML reports are in `scripts/`.
-For each strategy, state: time from load start to first scale-up, peak replica count,
-p95 latency during the scaling window, and whether any requests failed. A table plus two or
-three screenshots of the Locust charts is enough. This is the most valuable section in the
-document — a reviewer will read it before anything else.]
+Each strategy was load-tested independently (only one scaling mechanism active at a time) with identical Locust parameters: 200 concurrent users, spawn rate 20 users/sec, 10-minute duration, `minReplicas: 2` / `maxReplicas: 10` for all three.
 
-| Strategy | Time to first scale-up | Peak replicas | p95 latency under load | Failed requests |
-|---|---|---|---|---|
-| CPU HPA | | | | |
-| KEDA RPS | | | | |
-| KEDA queue | | | | |
+| Strategy | Requests | Failed | Error rate | Avg latency | P95 | P99 | Throughput |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| CPU-based HPA | 122,919 | 277 | 0.225% | 202 ms | 320 ms | 620 ms | 205.11 req/s |
+| KEDA RPS-based | 120,275 | 262 | 0.218% | 232 ms | 430 ms | 1,100 ms | 200.79 req/s |
+| KEDA Queue-based | 123,068 | 299 | 0.243% | 204 ms | 350 ms | 590 ms | 205.27 req/s |
 
-**Conclusion.** [One paragraph: which strategy responded fastest, which was most stable, and
-which you would choose for which workload shape.]
+**Scaling behavior.** CPU-based HPA scaled to 4 replicas once CPU utilisation reached 266% against the 50% target. KEDA Queue-based reacted most aggressively: once the Redis queue reached 8,493 pending tasks it drove the deployment to the configured maximum of 10 replicas (8 Running, 2 Pending at the time of measurement). KEDA RPS-based scaled off `sum(rate(http_requests_total[1m]))` against a 50 req/s threshold, and was the most sensitive of the three to correct Prometheus/PromQL configuration.
+
+**Conclusion.** CPU-based HPA was the most balanced strategy overall — simplest to operate and the most stable in average response time. KEDA Queue-based delivered the best tail latency (P99 590 ms) and reacted fastest to backlog growth, making it the strongest fit for asynchronous, queue-driven workloads. KEDA RPS-based had the lowest error rate (0.218%) but nearly 2x worse P99 latency (1,100 ms) than the other two, reflecting its sensitivity to metrics-pipeline accuracy — it needs the most careful tuning to pay off. All three strategies kept error rates under 0.25% while processing 120,000+ requests each, confirming the underlying deployment (rolling updates, `PodDisruptionBudget`, tuned probes) held up under load regardless of which trigger was driving it.
 
 ---
 
